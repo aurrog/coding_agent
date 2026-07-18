@@ -1,6 +1,20 @@
-from tools import read_file, list_files
+from agent.llm import chat
 
 
-# print(read_file('llm.py'))
+messages = [
+    {'role': 'system', 'content': 'Ты - ИИ помощник программист. Пиши кратко и только то, что просят.'}
+]
 
-print(list_files(''))
+while True:
+    user_input=input('>>> ')
+
+    if user_input=='quit':
+        break
+
+    messages.append({'role':'user', 'content':user_input})
+
+    model_output=chat(messages)
+    messages.append({'role':'assistant', 'content': model_output})
+    print('\n',model_output)
+    
+

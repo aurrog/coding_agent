@@ -16,6 +16,6 @@ def chat(messages):
 
     resp = client.chat.completions.create(
         model="deepseek/deepseek-v4-flash",        # или anthropic/claude-3.5-sonnet
-        messages=[{"role": "user", "content": "Привет!"}],
+        messages=messages
     )
     return resp.choices[0].message.content
