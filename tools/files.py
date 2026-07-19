@@ -3,7 +3,7 @@ from config import *
 
 
 def read_file(path):
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8') as f:
         return f.read()
     
 
@@ -41,4 +41,3 @@ def edit_file(path, content):
         content,
         encoding='utf-8'
     )
-    
