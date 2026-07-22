@@ -1,20 +1,8 @@
-from agent.llm import chat
+from agent import loop
 
 
-messages = [
-    {'role': 'system', 'content': 'Ты - ИИ помощник программист. Пиши кратко и только то, что просят.'}
-]
+user_query='Write a /health endpoint in working_directory'
 
-while True:
-    user_input=input('>>> ')
 
-    if user_input=='quit':
-        break
-
-    messages.append({'role':'user', 'content':user_input})
-
-    model_output=chat(messages)
-    messages.append({'role':'assistant', 'content': model_output})
-    print('\n',model_output)
-    
-
+r = loop.run_agent(user_request=user_query, max_iterations=5)
+print(r)

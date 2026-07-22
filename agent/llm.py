@@ -19,3 +19,12 @@ def chat(messages):
         messages=messages
     )
     return resp.choices[0].message.content
+
+
+def chat_with_tools(messages, tools):
+    resp=client.chat.completions.create(
+        model="deepseek/deepseek-v4-flash", 
+        messages=messages,
+        tools=tools
+    )
+    return resp
