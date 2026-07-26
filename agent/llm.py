@@ -1,34 +1,3 @@
-# from openai import OpenAI
-# from dotenv import load_dotenv
-# import os
-
-# load_dotenv()
-
-# API_KEY=os.getenv('API_KEY')
-# BASE_URL=os.getenv('BASE_URL')
-
-# client = OpenAI(
-#     base_url=BASE_URL,
-#     api_key=API_KEY,
-# )
-
-# def chat(messages):
-
-#     resp = client.chat.completions.create(
-#         model="deepseek/deepseek-v4-flash",
-#         messages=messages
-#     )
-#     return resp.choices[0].message.content
-
-
-# def chat_with_tools(messages, tools):
-#     resp=client.chat.completions.create(
-#         model="deepseek/deepseek-v4-flash", 
-#         messages=messages,
-#         tools=tools
-#     )
-#     return resp
-
 from typing import Protocol
 from openai import OpenAI
 import json
@@ -74,34 +43,38 @@ class OpenAICompatibleLLM:
                 finish_reason=choice.finish_reason or "stop",
             )
 
-        tool_cals=[]
+        tool_calls=[]
         for toolcall in message.tool_calls:
-
+            raw_arguments = toolcall.function.arguments
             try:
-                arguments=json.loads(toolcall.function.arguments)
+                arguments=json.loads(raw_arguments)
 
                 if not isinstance(arguments, dict):
                     raise ValueError('Tool arguments must be a JSON object')
                 
 
-                tool_cals.append(
+                tool_calls.append(
                     ToolCall(
                         id=toolcall.id,
-                        name=str(toolcall.function.name)
+                        name=str(toolcall.function.name),
                         arguments=arguments
                     )
                 )
-            except json.JSONDecodeError as e:
-                
-
-                    
-
-                # tool_cals.append(
-                #     ToolCall(
-                #         id=toolcall.id,
-                #         name=str(toolcall.function.name),
-                #         arguments=json.loads(toolcall.function.arguments)
-                #     )
-                # )
-
+            except (json.JSONDecodeError, ValueError) as e:
+                tool_calls.append(
+                    ToolCall(
+                        id=toolcall.id,
+                        name=str(toolcall.function.name),
+                        arguments=None,
+                        error=(
+                            f'Invalid tool arguments: {e}',
+                            f'Recieved: {raw_arguments!r}'
+                        )
+                    )
+                )
+        return ModelResponse(
+            content=None,
+            tool_calls=tool_calls,
+            finish_reason='tool_calls'
+        )
 
