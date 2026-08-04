@@ -1,32 +1,6 @@
-from typing import Protocol
+from abc import ABC, abstractmethod
 from enum import Enum
-
-
-class Tool(Protocol):
-    pass
-
-    def execute():
-        ...
-
-
-class BaseTool:
-    name: str
-    description: str
-    risk: ToolRisk
-    arguments_schema: dict
-
-    def schema(self) -> dict:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.arguments_schema,
-            },
-        }
-
-    def execute(self):
-        pass
+from typing import Any, Protocol
 
 
 class ToolRisk(Enum):
@@ -36,9 +10,49 @@ class ToolRisk(Enum):
     DESTRUCTIVE = "destructive"
 
 
+class Tool(Protocol):
+    name: str
+    description: str
+    risk: ToolRisk
+    arguments_schema: dict[str, Any]
+
+    def schema(self) -> dict[str, Any]:
+        ...
+
+    def execute(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
+
+class BaseTool(ABC):
+    name: str
+    description: str
+    risk: ToolRisk
+    arguments_schema: dict[str, Any]
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.arguments_schema,
+            },
+        }
+
+    @abstractmethod
+    def execute(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+
 class ToolValidationError(Exception):
     pass
 
 
-class ToolExcecutionError(Exception):
+class ToolExecutionError(Exception):
     pass
