@@ -12,3 +12,5 @@ wheels/
 # Secrets
 .env
 
+# Runtime logs
+agent.log*

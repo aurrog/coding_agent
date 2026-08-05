@@ -1,4 +1,10 @@
 from agent.llm import OpenAICompatibleLLM
+from agent.observability import (
+    ConsoleProgressReporter,
+    ProgressReporter,
+    configure_system_logging,
+    format_usage,
+)
 from agent.runner import AgentRunner
 from config import AgentContext, Settings
 from core.models import AgentStatus
@@ -10,11 +16,15 @@ from tools.files import (
     ListFilesTool,
     ReadFileTool,
     SearchTextTool,
+    WriteFileTool,
 )
 from tools.registry import ToolRegistry
 
 
-def build_runner(settings: Settings) -> AgentRunner:
+def build_runner(
+    settings: Settings,
+    progress: ProgressReporter | None = None,
+) -> AgentRunner:
     workspace = Workspace(settings.workspace_root)
     policy = ToolPolicy(settings.permission_mode)
     registry = ToolRegistry(policy)
@@ -23,6 +33,7 @@ def build_runner(settings: Settings) -> AgentRunner:
     registry.register(SearchTextTool(workspace))
     registry.register(CreateFileTool(workspace))
     registry.register(EditFileTool(workspace))
+    registry.register(WriteFileTool(workspace))
 
     return AgentRunner(
         llm=OpenAICompatibleLLM(settings.llm),
@@ -32,6 +43,7 @@ def build_runner(settings: Settings) -> AgentRunner:
             workspace_root=settings.workspace_root,
             permission_mode=policy.mode.value,
         ),
+        progress=progress,
     )
 
 
@@ -44,7 +56,16 @@ def main() -> int:
 
     try:
         settings = Settings.from_env(workspace_root)
-        runner = build_runner(settings)
+        configure_system_logging(
+            level=settings.observability.log_level,
+            log_file=settings.observability.log_file,
+        )
+        progress = (
+            ConsoleProgressReporter()
+            if settings.observability.show_progress
+            else None
+        )
+        runner = build_runner(settings, progress=progress)
     except (OSError, ValueError) as exc:
         print(f"Configuration error: {exc}")
         return 2
@@ -58,6 +79,7 @@ def main() -> int:
     result = runner.run(user_request)
     if result.final_text:
         print(result.final_text)
+    print(f"\nИспользование токенов: {format_usage(result.usage)}")
     if result.status != AgentStatus.COMPLETED:
         print(f"Agent stopped: {result.error}")
         return 1

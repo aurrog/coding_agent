@@ -151,6 +151,65 @@ class WorkspaceTests(unittest.TestCase):
                 expected_sha256=current["sha256"],
             )
 
+    def test_applies_multiple_edits_atomically(self):
+        current = self.workspace.read_text("src/app.py")
+
+        result = self.workspace.edit_text_many(
+            "src/app.py",
+            edits=[
+                {
+                    "old_text": "health",
+                    "new_text": "readiness",
+                },
+                {
+                    "old_text": "return 'ok'",
+                    "new_text": "return 'ready'",
+                },
+            ],
+            expected_sha256=current["sha256"],
+        )
+
+        self.assertEqual(result["edits_applied"], 2)
+        self.assertEqual(result["replacements"], 2)
+        self.assertEqual(
+            (self.root / "src" / "app.py").read_text(encoding="utf-8"),
+            "def readiness():\n    return 'ready'\n",
+        )
+
+    def test_failed_batch_edit_writes_nothing(self):
+        current = self.workspace.read_text("src/app.py")
+        original = current["content"]
+
+        with self.assertRaises(WorkspaceConflict):
+            self.workspace.edit_text_many(
+                "src/app.py",
+                edits=[
+                    {"old_text": "health", "new_text": "readiness"},
+                    {"old_text": "missing", "new_text": "value"},
+                ],
+                expected_sha256=current["sha256"],
+            )
+
+        self.assertEqual(
+            (self.root / "src" / "app.py").read_text(encoding="utf-8"),
+            original,
+        )
+
+    def test_rewrites_existing_file_using_latest_hash(self):
+        current = self.workspace.read_text("src/app.py")
+
+        result = self.workspace.write_text(
+            "src/app.py",
+            content="print('rewritten')\n",
+            expected_sha256=current["sha256"],
+        )
+
+        self.assertTrue(result["written"])
+        self.assertEqual(
+            (self.root / "src" / "app.py").read_text(encoding="utf-8"),
+            "print('rewritten')\n",
+        )
+
     def test_writes_reject_symlink_targets(self):
         link = self.root / "app-link.py"
         link.symlink_to(self.root / "src" / "app.py")

@@ -10,6 +10,7 @@ run commands.
 - `main.py` assembles the application and provides the CLI.
 - `agent/runner.py` owns the model/tool loop and execution budgets.
 - `agent/llm.py` adapts an OpenAI-compatible API to internal response models.
+- `agent/observability.py` provides console progress and rotating system logs.
 - `agent/prompts.py` contains the agent workflow and safety instructions.
 - `core/models.py` defines tool calls, results, and agent results.
 - `tools/registry.py` validates, authorizes, and dispatches tool calls.
@@ -32,6 +33,10 @@ MAX_ITERATIONS=8
 MAX_TOOL_CALLS=20
 MAX_CONTEXT_CHARACTERS=200000
 PERMISSION_MODE=read_only
+
+SHOW_PROGRESS=true
+LOG_LEVEL=INFO
+LOG_FILE=agent.log
 ```
 
 `TIMEOUT_SETTINGS` is accepted as a compatibility alias for
@@ -46,6 +51,22 @@ uv run python main.py
 The program first asks for the workspace directory and then for the analysis
 request. The model is read from `MODEL` in `.env`.
 
+The CLI writes short progress events to stderr: model iterations, tool names,
+safe file targets, tool outcomes, durations, and token usage. It never prints
+or logs hidden chain-of-thought. `SHOW_PROGRESS=false` disables these messages.
+
+Technical events are written to a rotating log configured by `LOG_FILE`. Each
+file is limited to 5 MB and three backups are retained. Logs contain operation
+metadata and error codes, but not user prompts, file contents, or tool content
+arguments. Token totals come from the provider's response usage; if an
+OpenAI-compatible provider omits usage, the CLI explicitly reports that the
+statistics are unavailable.
+
+`MAX_ITERATIONS` limits tool-capable model rounds. If every round is consumed
+by tool calls, the runner makes one additional finalization request without
+tools so the user still receives a final answer. Large generated arguments
+such as file contents and edit fragments are compacted in subsequent history.
+
 ## Current tools
 
 - `list_files`: inspect the workspace tree with depth and result limits.
@@ -53,6 +74,12 @@ request. The model is read from `MODEL` in `.env`.
 - `search_text`: search plain text using a file glob.
 - `create_file`: create a new UTF-8 file without overwriting an existing path.
 - `edit_file`: replace exact text after verifying the file's current SHA-256.
+- `write_file`: atomically replace a complete existing file after verifying
+  its current SHA-256.
+
+`edit_file` accepts an ordered `edits` array and applies all replacements in a
+single atomic operation. Use it to batch small changes to one file; use
+`write_file` for a substantial rewrite.
 
 The workspace layer blocks path traversal, access outside the selected root,
 known secret/generated directories, oversized files, and non-UTF-8 reads.

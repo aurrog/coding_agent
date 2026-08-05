@@ -11,6 +11,7 @@ from tools.files import (
     EditFileTool,
     ListFilesTool,
     ReadFileTool,
+    WriteFileTool,
 )
 from tools.registry import ToolRegistry
 
@@ -46,6 +47,7 @@ class ToolRegistryTests(unittest.TestCase):
         self.registry.register(ReadFileTool(workspace))
         self.registry.register(CreateFileTool(workspace))
         self.registry.register(EditFileTool(workspace))
+        self.registry.register(WriteFileTool(workspace))
         self.registry.register(WriteTool())
 
     def tearDown(self):
@@ -134,6 +136,7 @@ class ToolRegistryTests(unittest.TestCase):
         registry.register(ReadFileTool(workspace))
         registry.register(CreateFileTool(workspace))
         registry.register(EditFileTool(workspace))
+        registry.register(WriteFileTool(workspace))
 
         created = registry.execute(
             ToolCall(
@@ -151,18 +154,34 @@ class ToolRegistryTests(unittest.TestCase):
                 name="edit_file",
                 arguments={
                     "path": "created.py",
-                    "old_text": "value = 1",
-                    "new_text": "value = 2",
+                    "edits": [
+                        {
+                            "old_text": "value = 1",
+                            "new_text": "value = 2",
+                        }
+                    ],
                     "expected_sha256": created.data["sha256"],
+                },
+            )
+        )
+        written = registry.execute(
+            ToolCall(
+                id="call-8-write",
+                name="write_file",
+                arguments={
+                    "path": "created.py",
+                    "content": "value = 3\n",
+                    "expected_sha256": edited.data["sha256"],
                 },
             )
         )
 
         self.assertTrue(created.ok)
         self.assertTrue(edited.ok)
+        self.assertTrue(written.ok)
         self.assertEqual(
             (self.root / "created.py").read_text(encoding="utf-8"),
-            "value = 2\n",
+            "value = 3\n",
         )
 
     def test_edit_conflict_has_specific_error_code(self):
@@ -176,8 +195,12 @@ class ToolRegistryTests(unittest.TestCase):
                 name="edit_file",
                 arguments={
                     "path": "main.py",
-                    "old_text": "print('ok')",
-                    "new_text": "print('changed')",
+                    "edits": [
+                        {
+                            "old_text": "print('ok')",
+                            "new_text": "print('changed')",
+                        }
+                    ],
                     "expected_sha256": "0" * 64,
                 },
             )
@@ -185,6 +208,27 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.error.code, "WORKSPACE_CONFLICT")
+
+    def test_rejects_invalid_nested_edit_before_execution(self):
+        workspace = Workspace(self.root)
+        registry = ToolRegistry(ToolPolicy("workspace_write"))
+        registry.register(EditFileTool(workspace))
+        current = workspace.read_text("main.py")
+
+        result = registry.execute(
+            ToolCall(
+                id="call-10",
+                name="edit_file",
+                arguments={
+                    "path": "main.py",
+                    "edits": [{"old_text": "print('ok')"}],
+                    "expected_sha256": current["sha256"],
+                },
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error.code, "INVALID_ARGUMENTS")
 
 
 if __name__ == "__main__":

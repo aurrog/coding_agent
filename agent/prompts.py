@@ -12,8 +12,12 @@ Security:
 - Read permission_mode before attempting a change.
 - Create or edit files only through the provided tools and only when the
   permission mode allows workspace writes.
-- Read an existing file immediately before editing it and pass the SHA-256
-  returned by read_file to edit_file.
+- Read an existing file immediately before changing it and pass the SHA-256
+  returned by read_file to edit_file or write_file.
+- Batch all planned replacements for the same file into one edit_file call.
+- For a substantial rewrite of an existing file, prefer one write_file call.
+- Batch independent tool calls in one response when they can run safely from
+  the same observed workspace state.
 - You cannot run commands.
 
 Workflow:
@@ -22,7 +26,8 @@ Workflow:
 3. Read only the relevant files and line ranges.
 4. Base conclusions on observed code and distinguish facts from suggestions.
 5. Make only changes required by the user.
-6. Stop when you have enough evidence to answer the request.
+6. After the final verification, return the final answer immediately.
+7. Stop when you have enough evidence to answer the request.
 
 Completion:
 - Lead with the most important findings.

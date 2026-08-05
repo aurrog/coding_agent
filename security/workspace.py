@@ -197,53 +197,101 @@ class Workspace:
         expected_sha256: str,
         expected_replacements: int = 1,
     ) -> dict:
-        path = self._resolve_write_target(user_path)
-        self._validate_readable_file(path)
-        self._validate_sha256(expected_sha256)
-
-        if not old_text:
-            raise WorkspaceViolation("old_text must not be empty")
-        if not 1 <= expected_replacements <= 1_000:
-            raise WorkspaceViolation(
-                "expected_replacements must be between 1 and 1000"
-            )
-
-        try:
-            original_bytes = path.read_bytes()
-            original_text = original_bytes.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise WorkspaceViolation(
-                "File is not valid UTF-8 text"
-            ) from exc
-        except OSError as exc:
-            raise WorkspaceViolation("Cannot read file") from exc
-
-        actual_sha256 = hashlib.sha256(original_bytes).hexdigest()
-        if actual_sha256 != expected_sha256.lower():
-            raise WorkspaceConflict(
-                "File changed since it was read; read it again before editing"
-            )
-
-        replacements = original_text.count(old_text)
-        if replacements != expected_replacements:
-            raise WorkspaceConflict(
-                "old_text occurrence count does not match "
-                f"expected_replacements: expected {expected_replacements}, "
-                f"found {replacements}"
-            )
-
-        updated_text = original_text.replace(
-            old_text,
-            new_text,
-            expected_replacements,
+        return self.edit_text_many(
+            user_path,
+            edits=[
+                {
+                    "old_text": old_text,
+                    "new_text": new_text,
+                    "expected_replacements": expected_replacements,
+                }
+            ],
+            expected_sha256=expected_sha256,
         )
+
+    def edit_text_many(
+        self,
+        user_path: str,
+        *,
+        edits: list[dict[str, object]],
+        expected_sha256: str,
+    ) -> dict:
+        if not isinstance(edits, list) or not 1 <= len(edits) <= 100:
+            raise WorkspaceViolation("edits must contain between 1 and 100 items")
+
+        path, original_bytes, original_text = self._read_for_write(
+            user_path,
+            expected_sha256,
+        )
+        updated_text = original_text
+        total_replacements = 0
+
+        for index, edit in enumerate(edits, start=1):
+            if not isinstance(edit, dict):
+                raise WorkspaceViolation(f"edit {index} must be an object")
+            old_text = edit.get("old_text")
+            new_text = edit.get("new_text")
+            expected_replacements = edit.get("expected_replacements", 1)
+            if not isinstance(old_text, str) or not old_text:
+                raise WorkspaceViolation(
+                    f"edit {index} old_text must be a non-empty string"
+                )
+            if not isinstance(new_text, str):
+                raise WorkspaceViolation(
+                    f"edit {index} new_text must be a string"
+                )
+            if (
+                not isinstance(expected_replacements, int)
+                or isinstance(expected_replacements, bool)
+                or not 1 <= expected_replacements <= 1_000
+            ):
+                raise WorkspaceViolation(
+                    f"edit {index} expected_replacements must be between "
+                    "1 and 1000"
+                )
+
+            replacements = updated_text.count(old_text)
+            if replacements != expected_replacements:
+                raise WorkspaceConflict(
+                    f"edit {index} old_text occurrence count does not match: "
+                    f"expected {expected_replacements}, found {replacements}"
+                )
+            updated_text = updated_text.replace(
+                old_text,
+                new_text,
+                expected_replacements,
+            )
+            total_replacements += replacements
+
         updated_bytes = self._encode_writable_text(updated_text)
         self._atomic_replace(path, updated_text, original_bytes)
 
         return {
             "path": self.relative_path(path),
             "edited": True,
-            "replacements": replacements,
+            "edits_applied": len(edits),
+            "replacements": total_replacements,
+            "bytes_written": len(updated_bytes),
+            "sha256": hashlib.sha256(updated_bytes).hexdigest(),
+        }
+
+    def write_text(
+        self,
+        user_path: str,
+        *,
+        content: str,
+        expected_sha256: str,
+    ) -> dict:
+        path, original_bytes, _ = self._read_for_write(
+            user_path,
+            expected_sha256,
+        )
+        updated_bytes = self._encode_writable_text(content)
+        self._atomic_replace(path, content, original_bytes)
+
+        return {
+            "path": self.relative_path(path),
+            "written": True,
             "bytes_written": len(updated_bytes),
             "sha256": hashlib.sha256(updated_bytes).hexdigest(),
         }
@@ -453,6 +501,31 @@ class Workspace:
             raise WorkspaceViolation(
                 "expected_sha256 must be a SHA-256 hash"
             )
+
+    def _read_for_write(
+        self,
+        user_path: str,
+        expected_sha256: str,
+    ) -> tuple[Path, bytes, str]:
+        path = self._resolve_write_target(user_path)
+        self._validate_readable_file(path)
+        self._validate_sha256(expected_sha256)
+        try:
+            original_bytes = path.read_bytes()
+            original_text = original_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise WorkspaceViolation(
+                "File is not valid UTF-8 text"
+            ) from exc
+        except OSError as exc:
+            raise WorkspaceViolation("Cannot read file") from exc
+
+        actual_sha256 = hashlib.sha256(original_bytes).hexdigest()
+        if actual_sha256 != expected_sha256.lower():
+            raise WorkspaceConflict(
+                "File changed since it was read; read it again before editing"
+            )
+        return path, original_bytes, original_text
 
     def _atomic_replace(
         self,

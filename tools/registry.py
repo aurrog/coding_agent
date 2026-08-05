@@ -1,9 +1,13 @@
+import logging
 from typing import Any
 
 from core.models import ToolCall, ToolResult
 from security.policy import ToolPolicy
 from security.workspace import WorkspaceConflict, WorkspaceViolation
 from tools.base import Tool
+
+
+logger = logging.getLogger("coding_agent.tools.registry")
 
 
 JSON_TYPES = {
@@ -21,74 +25,94 @@ def validate_arguments(
     arguments: dict[str, Any] | None,
     schema: dict[str, Any],
 ) -> str | None:
-    if not isinstance(arguments, dict):
-        return "Tool arguments must be an object"
-
     errors: list[str] = []
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
-    allow_additional = schema.get("additionalProperties", True)
-
-    for argument_name in required:
-        if argument_name not in arguments:
-            errors.append(
-                f"Missing required argument: {argument_name}"
-            )
-
-    for argument_name, value in arguments.items():
-        argument_schema = properties.get(argument_name)
-        if argument_schema is None:
-            if not allow_additional:
-                errors.append(
-                    f"Unknown argument: {argument_name}"
-                )
-            continue
-
-        expected_type_name = argument_schema.get("type")
-        if expected_type_name is not None:
-            expected_python_type = JSON_TYPES.get(expected_type_name)
-            if expected_python_type is None:
-                errors.append(
-                    f"Unsupported schema type: {expected_type_name}"
-                )
-                continue
-            if not _matches_json_type(
-                value,
-                expected_type_name,
-                expected_python_type,
-            ):
-                errors.append(
-                    f"Invalid type for '{argument_name}': "
-                    f"expected {expected_type_name}, "
-                    f"received {type(value).__name__}"
-                )
-                continue
-
-        if "minimum" in argument_schema and value < argument_schema["minimum"]:
-            errors.append(
-                f"'{argument_name}' must be at least "
-                f"{argument_schema['minimum']}"
-            )
-        if "maximum" in argument_schema and value > argument_schema["maximum"]:
-            errors.append(
-                f"'{argument_name}' must be at most "
-                f"{argument_schema['maximum']}"
-            )
-        if "minLength" in argument_schema and len(value) < argument_schema["minLength"]:
-            errors.append(
-                f"'{argument_name}' must have length at least "
-                f"{argument_schema['minLength']}"
-            )
-        if "maxLength" in argument_schema and len(value) > argument_schema["maxLength"]:
-            errors.append(
-                f"'{argument_name}' is too long"
-            )
-        if "enum" in argument_schema and value not in argument_schema["enum"]:
-            errors.append(
-                f"Invalid value for '{argument_name}'"
-            )
-
+    _validate_schema_value(arguments, schema, "arguments", errors)
     return "\n".join(errors) if errors else None
+
+
+def _validate_schema_value(
+    value: Any,
+    schema: dict[str, Any],
+    location: str,
+    errors: list[str],
+) -> None:
+    expected_type_name = schema.get("type")
+    if expected_type_name is not None:
+        expected_python_type = JSON_TYPES.get(expected_type_name)
+        if expected_python_type is None:
+            errors.append(f"Unsupported schema type: {expected_type_name}")
+            return
+        if not _matches_json_type(
+            value,
+            expected_type_name,
+            expected_python_type,
+        ):
+            errors.append(
+                f"Invalid type for '{location}': expected "
+                f"{expected_type_name}, received {type(value).__name__}"
+            )
+            return
+
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"Invalid value for '{location}'")
+
+    if isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            errors.append(
+                f"'{location}' must have length at least "
+                f"{schema['minLength']}"
+            )
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"'{location}' is too long")
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(
+                f"'{location}' must be at least {schema['minimum']}"
+            )
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(
+                f"'{location}' must be at most {schema['maximum']}"
+            )
+
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errors.append(
+                f"'{location}' must contain at least {schema['minItems']} items"
+            )
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(
+                f"'{location}' must contain at most {schema['maxItems']} items"
+            )
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _validate_schema_value(
+                    item,
+                    item_schema,
+                    f"{location}[{index}]",
+                    errors,
+                )
+
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        for required_name in schema.get("required", []):
+            if required_name not in value:
+                errors.append(
+                    f"Missing required argument: {location}.{required_name}"
+                )
+        for name, nested_value in value.items():
+            nested_schema = properties.get(name)
+            if nested_schema is None:
+                if not schema.get("additionalProperties", True):
+                    errors.append(f"Unknown argument: {location}.{name}")
+                continue
+            _validate_schema_value(
+                nested_value,
+                nested_schema,
+                f"{location}.{name}",
+                errors,
+            )
 
 
 def _matches_json_type(
@@ -154,6 +178,11 @@ class ToolRegistry:
             arguments=arguments,
         )
         if not decision.allowed:
+            logger.warning(
+                "tool=%s authorization_denied requires_approval=%s",
+                tool.name,
+                decision.requires_approval,
+            )
             return ToolResult.failure(
                 tool_call_id=call.id,
                 code="PERMISSION_DENIED",
@@ -163,18 +192,21 @@ class ToolRegistry:
         try:
             data = tool.execute(arguments)
         except WorkspaceConflict as exc:
+            logger.info("tool=%s workspace_conflict", tool.name)
             return ToolResult.failure(
                 tool_call_id=call.id,
                 code="WORKSPACE_CONFLICT",
                 message=str(exc),
             )
         except WorkspaceViolation as exc:
+            logger.warning("tool=%s workspace_violation", tool.name)
             return ToolResult.failure(
                 tool_call_id=call.id,
                 code="WORKSPACE_VIOLATION",
                 message=str(exc),
             )
         except Exception:
+            logger.exception("tool=%s unexpected_execution_error", tool.name)
             return ToolResult.failure(
                 tool_call_id=call.id,
                 code="TOOL_EXECUTION_ERROR",

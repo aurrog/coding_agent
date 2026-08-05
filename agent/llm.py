@@ -4,7 +4,7 @@ from typing import Any, Protocol
 from openai import OpenAI
 
 from config import LLMSettings
-from core.models import ModelResponse, ToolCall
+from core.models import ModelResponse, TokenUsage, ToolCall
 
 
 class LLMClient(Protocol):
@@ -31,11 +31,13 @@ class OpenAICompatibleLLM:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> ModelResponse:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            tools=tools,
-        )
+        request: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+        }
+        if tools:
+            request["tools"] = tools
+        response = self._client.chat.completions.create(**request)
         return self._normalize_response(response)
 
     @staticmethod
@@ -86,4 +88,45 @@ class OpenAICompatibleLLM:
             ),
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason,
+            usage=OpenAICompatibleLLM._normalize_usage(response),
+        )
+
+    @staticmethod
+    def _normalize_usage(response: Any) -> TokenUsage:
+        raw_usage = getattr(response, "usage", None)
+        if raw_usage is None:
+            return TokenUsage()
+
+        prompt_tokens = int(
+            getattr(raw_usage, "prompt_tokens", 0) or 0
+        )
+        completion_tokens = int(
+            getattr(raw_usage, "completion_tokens", 0) or 0
+        )
+        total_tokens = int(
+            getattr(raw_usage, "total_tokens", 0)
+            or prompt_tokens + completion_tokens
+        )
+        prompt_details = getattr(
+            raw_usage,
+            "prompt_tokens_details",
+            None,
+        )
+        completion_details = getattr(
+            raw_usage,
+            "completion_tokens_details",
+            None,
+        )
+
+        return TokenUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=int(
+                getattr(prompt_details, "cached_tokens", 0) or 0
+            ),
+            reasoning_tokens=int(
+                getattr(completion_details, "reasoning_tokens", 0) or 0
+            ),
+            reported=True,
         )

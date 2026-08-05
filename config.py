@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 
@@ -28,11 +28,21 @@ class AgentContext:
 
 
 @dataclass(frozen=True)
+class ObservabilitySettings:
+    log_level: str = "INFO"
+    log_file: Path = Path("agent.log")
+    show_progress: bool = True
+
+
+@dataclass(frozen=True)
 class Settings:
     workspace_root: Path
     permission_mode: str
     llm: LLMSettings
     agent: AgentSettings
+    observability: ObservabilitySettings = field(
+        default_factory=ObservabilitySettings
+    )
 
     @classmethod
     def from_env(
@@ -73,6 +83,14 @@ class Settings:
             "PERMISSION_MODE",
             "read_only",
         )
+        log_level = _log_level(os.getenv("LOG_LEVEL", "INFO"))
+        log_file = Path(
+            os.getenv("LOG_FILE", "agent.log") or "agent.log"
+        ).expanduser().resolve()
+        show_progress = _boolean(
+            os.getenv("SHOW_PROGRESS", "true"),
+            "SHOW_PROGRESS",
+        )
 
         return cls(
             workspace_root=Path(workspace_root).expanduser().resolve(),
@@ -88,6 +106,11 @@ class Settings:
                 max_iterations=max_iterations,
                 max_tool_calls=max_tool_calls,
                 max_context_characters=max_context_characters,
+            ),
+            observability=ObservabilitySettings(
+                log_level=log_level,
+                log_file=log_file,
+                show_progress=show_progress,
             ),
         )
 
@@ -127,3 +150,19 @@ def _positive_float(raw_value: str, name: str) -> float:
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero")
     return value
+
+
+def _log_level(raw_value: str) -> str:
+    value = raw_value.upper()
+    if value not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ValueError("LOG_LEVEL must be a standard logging level")
+    return value
+
+
+def _boolean(raw_value: str, name: str) -> bool:
+    normalized = raw_value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")

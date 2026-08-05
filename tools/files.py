@@ -191,10 +191,10 @@ class CreateFileTool(WorkspaceTool):
 class EditFileTool(WorkspaceTool):
     name = "edit_file"
     description = (
-        "Safely edits an existing UTF-8 text file by replacing an exact "
-        "text fragment. Read the file immediately before editing and pass "
-        "the SHA-256 returned by read_file. The edit fails if the file "
-        "changed or the fragment count is unexpected."
+        "Atomically applies one or more exact-text replacements to an "
+        "existing UTF-8 file. Batch all planned replacements for the same "
+        "file in one call. Read the file first and pass its SHA-256. No "
+        "change is written if any replacement or hash check fails."
     )
     risk = ToolRisk.WORKSPACE_WRITE
     arguments_schema = {
@@ -206,16 +206,35 @@ class EditFileTool(WorkspaceTool):
                 "maxLength": 4096,
                 "description": "Existing file path relative to the workspace.",
             },
-            "old_text": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1_000_000,
-                "description": "Exact text fragment to replace.",
-            },
-            "new_text": {
-                "type": "string",
-                "maxLength": 1_000_000,
-                "description": "Replacement text; may be empty to remove it.",
+            "edits": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "description": (
+                    "Ordered replacements applied sequentially and atomically."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1_000_000,
+                        },
+                        "new_text": {
+                            "type": "string",
+                            "maxLength": 1_000_000,
+                        },
+                        "expected_replacements": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000,
+                            "default": 1,
+                        },
+                    },
+                    "required": ["old_text", "new_text"],
+                    "additionalProperties": False,
+                },
             },
             "expected_sha256": {
                 "type": "string",
@@ -223,18 +242,10 @@ class EditFileTool(WorkspaceTool):
                 "maxLength": 64,
                 "description": "SHA-256 returned by the latest read_file call.",
             },
-            "expected_replacements": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 1000,
-                "default": 1,
-                "description": "Required number of old_text occurrences.",
-            },
         },
         "required": [
             "path",
-            "old_text",
-            "new_text",
+            "edits",
             "expected_sha256",
         ],
         "additionalProperties": False,
@@ -244,13 +255,53 @@ class EditFileTool(WorkspaceTool):
         self,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        return self._workspace.edit_text(
+        return self._workspace.edit_text_many(
             arguments["path"],
-            old_text=arguments["old_text"],
-            new_text=arguments["new_text"],
+            edits=arguments["edits"],
             expected_sha256=arguments["expected_sha256"],
-            expected_replacements=arguments.get(
-                "expected_replacements",
-                1,
-            ),
+        )
+
+
+class WriteFileTool(WorkspaceTool):
+    name = "write_file"
+    description = (
+        "Atomically replaces the complete content of an existing UTF-8 "
+        "file. Use this instead of many edits for a substantial rewrite. "
+        "Read the file first and pass its SHA-256; the write fails if the "
+        "file changed. It never creates a new file."
+    )
+    risk = ToolRisk.WORKSPACE_WRITE
+    arguments_schema = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "description": "Existing file path relative to the workspace.",
+            },
+            "content": {
+                "type": "string",
+                "maxLength": 1_000_000,
+                "description": "Complete replacement UTF-8 content.",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64,
+                "description": "SHA-256 returned by the latest read_file call.",
+            },
+        },
+        "required": ["path", "content", "expected_sha256"],
+        "additionalProperties": False,
+    }
+
+    def execute(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._workspace.write_text(
+            arguments["path"],
+            content=arguments["content"],
+            expected_sha256=arguments["expected_sha256"],
         )
