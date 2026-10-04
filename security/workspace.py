@@ -76,6 +76,14 @@ class Workspace:
     def relative_path(self, path: Path) -> str:
         return path.relative_to(self._root).as_posix() or "."
 
+    def resolve_directory(self, user_path: str | Path = ".") -> Path:
+        path = self.resolve(user_path)
+        if not path.exists():
+            raise WorkspaceViolation("Directory does not exist")
+        if not path.is_dir():
+            raise WorkspaceViolation("Requested path is not a directory")
+        return path
+
     def _resolve_write_target(self, user_path: str | Path) -> Path:
         """Resolve a write target and reject every symlink in its path."""
         raw_path = Path(user_path).expanduser()

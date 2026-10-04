@@ -1,13 +1,32 @@
+from dataclasses import dataclass
+import hashlib
+import json
 import logging
 from typing import Any
 
-from core.models import ToolCall, ToolResult
+from core.models import ApprovalRequest, ToolCall, ToolResult
 from security.policy import ToolPolicy
 from security.workspace import WorkspaceConflict, WorkspaceViolation
-from tools.base import Tool
+from tools.base import Tool, ToolExecutionError
 
 
 logger = logging.getLogger("coding_agent.tools.registry")
+
+
+@dataclass(frozen=True)
+class PreparedToolCall:
+    tool_call_id: str
+    tool_name: str
+    arguments_json: str
+    fingerprint: str
+    requires_approval: bool
+    approval_request: ApprovalRequest | None = None
+
+    def arguments(self) -> dict[str, Any]:
+        value = json.loads(self.arguments_json)
+        if not isinstance(value, dict):
+            raise ValueError("Prepared tool arguments must be an object")
+        return value
 
 
 JSON_TYPES = {
@@ -145,7 +164,10 @@ class ToolRegistry:
             for tool in self._tools.values()
         ]
 
-    def execute(self, call: ToolCall) -> ToolResult:
+    def prepare(
+        self,
+        call: ToolCall,
+    ) -> PreparedToolCall | ToolResult:
         if call.error:
             return ToolResult.failure(
                 tool_call_id=call.id,
@@ -177,7 +199,7 @@ class ToolRegistry:
             tool=tool,
             arguments=arguments,
         )
-        if not decision.allowed:
+        if not decision.allowed and not decision.requires_approval:
             logger.warning(
                 "tool=%s authorization_denied requires_approval=%s",
                 tool.name,
@@ -189,31 +211,135 @@ class ToolRegistry:
                 message=decision.reason or "Operation is not allowed",
             )
 
+        arguments_json = json.dumps(
+            arguments,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        fingerprint = hashlib.sha256(
+            f"{tool.name}\0{arguments_json}".encode("utf-8")
+        ).hexdigest()[:16]
+        approval_request = None
+        if decision.requires_approval:
+            try:
+                approval_request = tool.approval_request(
+                    arguments,
+                    fingerprint,
+                )
+            except WorkspaceViolation as exc:
+                return ToolResult.failure(
+                    tool_call_id=call.id,
+                    code="WORKSPACE_VIOLATION",
+                    message=str(exc),
+                )
+            except ToolExecutionError as exc:
+                return ToolResult.failure(
+                    tool_call_id=call.id,
+                    code="TOOL_PREPARATION_ERROR",
+                    message=str(exc),
+                )
+            except Exception:
+                logger.exception(
+                    "tool=%s approval_request_failed",
+                    tool.name,
+                )
+                return ToolResult.failure(
+                    tool_call_id=call.id,
+                    code="TOOL_PREPARATION_ERROR",
+                    message="Tool approval request could not be prepared",
+                )
+
+        return PreparedToolCall(
+            tool_call_id=call.id,
+            tool_name=tool.name,
+            arguments_json=arguments_json,
+            fingerprint=fingerprint,
+            requires_approval=decision.requires_approval,
+            approval_request=approval_request,
+        )
+
+    def execute(
+        self,
+        call: ToolCall,
+    ) -> ToolResult:
+        prepared = self.prepare(call)
+        if isinstance(prepared, ToolResult):
+            return prepared
+        return self.execute_prepared(prepared)
+
+    def execute_prepared(
+        self,
+        prepared: PreparedToolCall,
+        *,
+        approved: bool | None = None,
+    ) -> ToolResult:
+        if prepared.requires_approval and approved is None:
+            return ToolResult.failure(
+                tool_call_id=prepared.tool_call_id,
+                code="APPROVAL_REQUIRED",
+                message="Explicit user approval is required",
+            )
+        if prepared.requires_approval and not approved:
+            return ToolResult.failure(
+                tool_call_id=prepared.tool_call_id,
+                code="APPROVAL_DENIED",
+                message="User declined the operation",
+            )
+
+        tool = self._tools.get(prepared.tool_name)
+        if tool is None:
+            return ToolResult.failure(
+                tool_call_id=prepared.tool_call_id,
+                code="UNKNOWN_TOOL",
+                message=f"Unknown tool: {prepared.tool_name}",
+            )
+
+        try:
+            arguments = prepared.arguments()
+        except (json.JSONDecodeError, ValueError):
+            logger.exception(
+                "tool=%s invalid_prepared_arguments",
+                prepared.tool_name,
+            )
+            return ToolResult.failure(
+                tool_call_id=prepared.tool_call_id,
+                code="INVALID_ARGUMENTS",
+                message="Prepared tool arguments are invalid",
+            )
+
         try:
             data = tool.execute(arguments)
         except WorkspaceConflict as exc:
             logger.info("tool=%s workspace_conflict", tool.name)
             return ToolResult.failure(
-                tool_call_id=call.id,
+                tool_call_id=prepared.tool_call_id,
                 code="WORKSPACE_CONFLICT",
                 message=str(exc),
             )
         except WorkspaceViolation as exc:
             logger.warning("tool=%s workspace_violation", tool.name)
             return ToolResult.failure(
-                tool_call_id=call.id,
+                tool_call_id=prepared.tool_call_id,
                 code="WORKSPACE_VIOLATION",
+                message=str(exc),
+            )
+        except ToolExecutionError as exc:
+            logger.warning("tool=%s execution_error", tool.name)
+            return ToolResult.failure(
+                tool_call_id=prepared.tool_call_id,
+                code="TOOL_EXECUTION_ERROR",
                 message=str(exc),
             )
         except Exception:
             logger.exception("tool=%s unexpected_execution_error", tool.name)
             return ToolResult.failure(
-                tool_call_id=call.id,
+                tool_call_id=prepared.tool_call_id,
                 code="TOOL_EXECUTION_ERROR",
                 message="Tool execution failed",
             )
 
         return ToolResult.success(
-            tool_call_id=call.id,
+            tool_call_id=prepared.tool_call_id,
             data=data,
         )

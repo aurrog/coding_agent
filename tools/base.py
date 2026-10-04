@@ -2,10 +2,13 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Protocol
 
+from core.models import ApprovalRequest
+
 
 class ToolRisk(Enum):
     READ_ONLY = "read_only"
     WORKSPACE_WRITE = "workspace_write"
+    COMMAND = "command"
     EXTERNAL = "external"
     DESTRUCTIVE = "destructive"
 
@@ -17,6 +20,13 @@ class Tool(Protocol):
     arguments_schema: dict[str, Any]
 
     def schema(self) -> dict[str, Any]:
+        ...
+
+    def approval_request(
+        self,
+        arguments: dict[str, Any],
+        fingerprint: str,
+    ) -> ApprovalRequest:
         ...
 
     def execute(
@@ -41,6 +51,19 @@ class BaseTool(ABC):
                 "parameters": self.arguments_schema,
             },
         }
+
+    def approval_request(
+        self,
+        arguments: dict[str, Any],
+        fingerprint: str,
+    ) -> ApprovalRequest:
+        target = arguments.get("path")
+        return ApprovalRequest(
+            tool_name=self.name,
+            title=f"Allow tool {self.name}?",
+            fingerprint=fingerprint,
+            target=target if isinstance(target, str) else None,
+        )
 
     @abstractmethod
     def execute(

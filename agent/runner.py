@@ -3,6 +3,7 @@ import logging
 from time import perf_counter
 from uuid import uuid4
 
+from agent.approval import ApprovalProvider, DenyAllApprovalProvider
 from agent.llm import LLMClient
 from agent.observability import (
     NullProgressReporter,
@@ -10,7 +11,13 @@ from agent.observability import (
 )
 from agent.prompts import build_initial_messages
 from config import AgentContext, AgentSettings
-from core.models import AgentResult, TokenUsage, ToolCall
+from core.models import (
+    AgentResult,
+    ApprovalDecision,
+    TokenUsage,
+    ToolCall,
+    ToolResult,
+)
 from tools.registry import ToolRegistry
 
 
@@ -25,12 +32,14 @@ class AgentRunner:
         settings: AgentSettings,
         context: AgentContext,
         progress: ProgressReporter | None = None,
+        approval: ApprovalProvider | None = None,
     ):
         self._llm = llm
         self._tools = tools
         self._settings = settings
         self._context = context
         self._progress = progress or NullProgressReporter()
+        self._approval = approval or DenyAllApprovalProvider()
 
     def run(self, user_request: str) -> AgentResult:
         run_id = uuid4().hex[:12]
@@ -56,6 +65,7 @@ class AgentRunner:
             self._context.permission_mode,
         )
         total_tool_calls = 0
+        denied_fingerprints: set[str] = set()
 
         for iteration in range(self._settings.max_iterations):
             if self._context_size(messages) > (
@@ -146,10 +156,12 @@ class AgentRunner:
                         )
 
                     target = self._tool_target(call)
-                    self._progress.tool_started(call.name, target)
-                    tool_started = perf_counter()
-                    result = self._tools.execute(call)
-                    tool_duration = perf_counter() - tool_started
+                    result, tool_duration = self._execute_tool_call(
+                        call,
+                        target=target,
+                        denied_fingerprints=denied_fingerprints,
+                        run_id=run_id,
+                    )
                     error_code = (
                         result.error.code
                         if result.error is not None
@@ -232,6 +244,78 @@ class AgentRunner:
             total_tool_calls=total_tool_calls,
             total_usage=total_usage,
         )
+
+    def _execute_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        target: str | None,
+        denied_fingerprints: set[str],
+        run_id: str,
+    ) -> tuple[ToolResult, float]:
+        prepared = self._tools.prepare(call)
+        if isinstance(prepared, ToolResult):
+            return prepared, 0.0
+
+        approved: bool | None = None
+        if prepared.requires_approval:
+            if prepared.fingerprint in denied_fingerprints:
+                logger.info(
+                    "run=%s tool=%s approval_reused_denial "
+                    "fingerprint=%s",
+                    run_id,
+                    prepared.tool_name,
+                    prepared.fingerprint,
+                )
+                approved = False
+            else:
+                request = prepared.approval_request
+                if request is None:
+                    logger.error(
+                        "run=%s tool=%s approval_request_missing",
+                        run_id,
+                        prepared.tool_name,
+                    )
+                    return ToolResult.failure(
+                        tool_call_id=prepared.tool_call_id,
+                        code="TOOL_PREPARATION_ERROR",
+                        message="Tool approval request is missing",
+                    ), 0.0
+
+                logger.info(
+                    "run=%s tool=%s approval_requested fingerprint=%s",
+                    run_id,
+                    prepared.tool_name,
+                    prepared.fingerprint,
+                )
+                try:
+                    decision = self._approval.request(request)
+                except Exception:
+                    logger.exception(
+                        "run=%s tool=%s approval_provider_failed",
+                        run_id,
+                        prepared.tool_name,
+                    )
+                    decision = ApprovalDecision.DENIED
+                approved = decision == ApprovalDecision.APPROVED
+                logger.info(
+                    "run=%s tool=%s approval_decision=%s fingerprint=%s",
+                    run_id,
+                    prepared.tool_name,
+                    "approved" if approved else "denied",
+                    prepared.fingerprint,
+                )
+                if not approved:
+                    denied_fingerprints.add(prepared.fingerprint)
+
+        if not prepared.requires_approval or approved:
+            self._progress.tool_started(call.name, target)
+        tool_started = perf_counter()
+        result = self._tools.execute_prepared(
+            prepared,
+            approved=approved,
+        )
+        return result, perf_counter() - tool_started
 
     @staticmethod
     def _context_size(messages: list[dict]) -> int:

@@ -59,6 +59,13 @@ class ToolPolicy:
                 reason="Workspace write permission is required",
             )
 
+        if tool.risk == ToolRisk.COMMAND:
+            return PolicyDecision(
+                allowed=False,
+                requires_approval=True,
+                reason="Command execution requires explicit approval",
+            )
+
         if tool.risk in {
             ToolRisk.EXTERNAL,
             ToolRisk.DESTRUCTIVE,

@@ -13,6 +13,21 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class ApprovalRequest:
+    tool_name: str
+    title: str
+    fingerprint: str
+    command: tuple[str, ...] = ()
+    working_directory: str | None = None
+    target: str | None = None
+
+
+class ApprovalDecision(Enum):
+    APPROVED = "approved"
+    DENIED = "denied"
+
+
+@dataclass(frozen=True)
 class ToolError:
     code: str
     message: str

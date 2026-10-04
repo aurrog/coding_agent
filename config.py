@@ -35,6 +35,26 @@ class ObservabilitySettings:
 
 
 @dataclass(frozen=True)
+class VerificationSettings:
+    test_command: tuple[str, ...] = (
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-v",
+    )
+    lint_command: tuple[str, ...] = (
+        "ruff",
+        "check",
+        ".",
+    )
+    timeout_seconds: float = 120.0
+    max_output_characters: int = 12_000
+
+
+@dataclass(frozen=True)
 class Settings:
     workspace_root: Path
     permission_mode: str
@@ -42,6 +62,9 @@ class Settings:
     agent: AgentSettings
     observability: ObservabilitySettings = field(
         default_factory=ObservabilitySettings
+    )
+    verification: VerificationSettings = field(
+        default_factory=VerificationSettings
     )
 
     @classmethod
@@ -91,6 +114,16 @@ class Settings:
             os.getenv("SHOW_PROGRESS", "true"),
             "SHOW_PROGRESS",
         )
+        verification_timeout_seconds = _bounded_positive_float(
+            os.getenv("VERIFICATION_TIMEOUT_SECONDS", "120"),
+            "VERIFICATION_TIMEOUT_SECONDS",
+            maximum=300,
+        )
+        max_command_output_characters = _bounded_positive_int(
+            os.getenv("MAX_COMMAND_OUTPUT_CHARACTERS", "12000"),
+            "MAX_COMMAND_OUTPUT_CHARACTERS",
+            maximum=100_000,
+        )
 
         return cls(
             workspace_root=Path(workspace_root).expanduser().resolve(),
@@ -111,6 +144,10 @@ class Settings:
                 log_level=log_level,
                 log_file=log_file,
                 show_progress=show_progress,
+            ),
+            verification=VerificationSettings(
+                timeout_seconds=verification_timeout_seconds,
+                max_output_characters=max_command_output_characters,
             ),
         )
 
@@ -149,6 +186,30 @@ def _positive_float(raw_value: str, name: str) -> float:
         raise ValueError(f"{name} must be a number") from exc
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero")
+    return value
+
+
+def _bounded_positive_int(
+    raw_value: str,
+    name: str,
+    *,
+    maximum: int,
+) -> int:
+    value = _positive_int(raw_value, name)
+    if value > maximum:
+        raise ValueError(f"{name} must not exceed {maximum}")
+    return value
+
+
+def _bounded_positive_float(
+    raw_value: str,
+    name: str,
+    *,
+    maximum: float,
+) -> float:
+    value = _positive_float(raw_value, name)
+    if value > maximum:
+        raise ValueError(f"{name} must not exceed {maximum}")
     return value
 
 

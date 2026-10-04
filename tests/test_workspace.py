@@ -51,6 +51,14 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(WorkspaceViolation):
             self.workspace.read_text(".env")
 
+    def test_resolves_only_directories_inside_workspace(self):
+        self.assertEqual(
+            self.workspace.resolve_directory("src"),
+            self.root.resolve() / "src",
+        )
+        with self.assertRaises(WorkspaceViolation):
+            self.workspace.resolve_directory("src/app.py")
+
     def test_reads_line_range_and_hash(self):
         result = self.workspace.read_text(
             "src/app.py",

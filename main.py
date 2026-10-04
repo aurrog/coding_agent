@@ -1,3 +1,4 @@
+from agent.approval import ApprovalProvider, ConsoleApprovalProvider
 from agent.llm import OpenAICompatibleLLM
 from agent.observability import (
     ConsoleProgressReporter,
@@ -8,6 +9,7 @@ from agent.observability import (
 from agent.runner import AgentRunner
 from config import AgentContext, Settings
 from core.models import AgentStatus
+from execution.verification import VerificationRunner
 from security.policy import ToolPolicy
 from security.workspace import Workspace
 from tools.files import (
@@ -19,11 +21,13 @@ from tools.files import (
     WriteFileTool,
 )
 from tools.registry import ToolRegistry
+from tools.verification import RunLinterTool, RunTestsTool
 
 
 def build_runner(
     settings: Settings,
     progress: ProgressReporter | None = None,
+    approval: ApprovalProvider | None = None,
 ) -> AgentRunner:
     workspace = Workspace(settings.workspace_root)
     policy = ToolPolicy(settings.permission_mode)
@@ -34,6 +38,12 @@ def build_runner(
     registry.register(CreateFileTool(workspace))
     registry.register(EditFileTool(workspace))
     registry.register(WriteFileTool(workspace))
+    verification_runner = VerificationRunner(
+        workspace,
+        settings.verification,
+    )
+    registry.register(RunTestsTool(verification_runner))
+    registry.register(RunLinterTool(verification_runner))
 
     return AgentRunner(
         llm=OpenAICompatibleLLM(settings.llm),
@@ -44,6 +54,7 @@ def build_runner(
             permission_mode=policy.mode.value,
         ),
         progress=progress,
+        approval=approval,
     )
 
 
@@ -65,7 +76,11 @@ def main() -> int:
             if settings.observability.show_progress
             else None
         )
-        runner = build_runner(settings, progress=progress)
+        runner = build_runner(
+            settings,
+            progress=progress,
+            approval=ConsoleApprovalProvider(),
+        )
     except (OSError, ValueError) as exc:
         print(f"Configuration error: {exc}")
         return 2
